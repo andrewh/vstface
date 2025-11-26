@@ -37,7 +37,7 @@ Capture a single plug-in:
 Sweep standard plug-in folders:
 
 ```bash
-python3 ./scripts/scan_all_vst3.py ./out \
+python3 ./scripts/scan.py ./out \
   --timeout 120 \
   --delete-unsupported
 ```
@@ -55,7 +55,7 @@ captures as `vstface-<timestamp>.log`. Key options:
 - `--delete-unsupported` — remove bundles that report “doesn’t contain a version
   for the current architecture” (useful for pruning Intel-only VST3s)
 
-Run `python3 scripts/scan_all_vst3.py --help` for the full CLI reference.
+Run `python3 scripts/scan.py --help` for the full CLI reference.
 
 ## Behavior
 
@@ -85,3 +85,7 @@ Run `python3 scripts/scan_all_vst3.py --help` for the full CLI reference.
 This code is offered with no warranty or support. Use at your own risk. Before
 building or redistributing, review the Steinberg VST3 SDK license under
 `third_party/vst3sdk` and comply with all terms.
+
+## Roadmap
+
+See [TODO.md](TODO.md) for known follow-ups.

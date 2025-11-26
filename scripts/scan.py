@@ -65,7 +65,7 @@ def parse_args() -> argparse.Namespace:
 
 def configure_logging(log_path: Path) -> logging.Logger:
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    logger = logging.getLogger("scan_all_vst3")
+    logger = logging.getLogger("scan")
     logger.setLevel(logging.INFO)
     formatter = logging.Formatter("%(asctime)s %(levelname)s: %(message)s")
 
