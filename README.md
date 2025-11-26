@@ -57,6 +57,28 @@ captures as `vstface-<timestamp>.log`. Key options:
 
 Run `python3 scripts/scan.py --help` for the full CLI reference.
 
+## Test Fixture
+
+The tree now ships with `vstface_test_fixture`, a minimal VST3 plug-in with a
+static Cocoa view that makes it easy to regression-test the host without
+depending on third-party bundles.
+
+- Build it once you have configured CMake:
+
+  ```bash
+  cmake --build build --config Release --target vstface_test_fixture
+  ```
+
+- The resulting bundle is written to
+  `build/VST3/<Config>/vstface_test_fixture.vst3`. Capture it directly:
+
+  ```bash
+  ./build/vstface build/VST3/Release/vstface_test_fixture.vst3 ./out/fixture.png
+  ```
+
+This fixture only renders static UI but exercises the full launch and capture
+pipeline, making it ideal for automated smoke checks.
+
 ## Behavior
 
 - Only VST3 plug-ins are loaded. Attempting to pass other bundle types will
@@ -88,4 +110,4 @@ building or redistributing, review the Steinberg VST3 SDK license under
 
 ## Roadmap
 
-See [TODO.md](TODO.md) for known follow-ups.
+See the [issues](https://github.com/andrewh/vstface/issues).
