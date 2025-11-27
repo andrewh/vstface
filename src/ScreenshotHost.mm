@@ -1,12 +1,22 @@
 #import "ScreenshotHost.hpp"
+#import "EditorHostRunner.hpp"
 
 #import <Cocoa/Cocoa.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <dispatch/dispatch.h>
 #import <dlfcn.h>
 
-#if __has_include(<pluginterfaces/vst/vsttypes.h>)
-#define VSTSHOT_HAS_VST3_SDK 1
+#include <optional>
+
+#ifndef VSTSHOT_HAS_VST3_SDK
+#    if __has_include(<pluginterfaces/vst/vsttypes.h>)
+#        define VSTSHOT_HAS_VST3_SDK 1
+#    else
+#        define VSTSHOT_HAS_VST3_SDK 0
+#    endif
+#endif
+
+#if VSTSHOT_HAS_VST3_SDK
 #include <pluginterfaces/base/ipluginbase.h>
 #include <pluginterfaces/gui/iplugview.h>
 #include <pluginterfaces/vst/ivstaudioprocessor.h>
@@ -18,11 +28,9 @@
 #include <public.sdk/source/vst/hosting/plugprovider.h>
 using namespace Steinberg;
 using namespace Steinberg::Vst;
-#else
-#define VSTSHOT_HAS_VST3_SDK 0
 #endif
 
-namespace vstshot {
+namespace vstface {
 
 namespace fs = std::filesystem;
 
@@ -34,6 +42,64 @@ ScreenshotHost::~ScreenshotHost() {}
 
 #if VSTSHOT_HAS_VST3_SDK
 namespace {
+
+static void pumpRunLoop(double seconds) {
+    NSDate* until = [NSDate dateWithTimeIntervalSinceNow:seconds];
+    while ([[NSDate date] compare:until] == NSOrderedAscending) {
+        @autoreleasepool {
+            NSEvent* event =
+                [NSApp nextEventMatchingMask:NSEventMaskAny
+                                   untilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]
+                                      inMode:NSDefaultRunLoopMode
+                                     dequeue:YES];
+            if (event) {
+                [NSApp sendEvent:event];
+            }
+        }
+    }
+}
+
+static bool captureWindowToFile(NSWindow* window,
+                                NSView* contentView,
+                                const fs::path& outputPng);
+
+class RunnerScopeGuard {
+public:
+    explicit RunnerScopeGuard(EditorHostRunner& runner) : runner(runner) {}
+    ~RunnerScopeGuard() { runner.close(); }
+
+private:
+    EditorHostRunner& runner;
+};
+
+bool resolveClassFilterToUid(const std::filesystem::path& pluginBundle,
+                             const std::string& className,
+                             std::optional<std::string>& outUid) {
+    using namespace VST3::Hosting;
+
+    std::string error;
+    auto module = Module::create(pluginBundle.string(), error);
+    if (!module) {
+        fprintf(stderr, "Failed to load module %s: %s\n", pluginBundle.c_str(), error.c_str());
+        return false;
+    }
+
+    for (auto& info : module->getFactory().classInfos()) {
+        if (strcmp(info.category().data(), kVstAudioEffectClass) != 0) {
+            continue;
+        }
+        if (info.name() == className) {
+            outUid = info.ID().toString();
+            return true;
+        }
+    }
+
+    fprintf(stderr,
+            "No audio effect class named %s in %s\n",
+            className.c_str(),
+            pluginBundle.c_str());
+    return false;
+}
 
 class PluginContextGuard {
 public:
@@ -106,27 +172,92 @@ private:
     __weak NSWindow* window = nil;
 };
 
-} // namespace
+static bool captureWindowToFile(NSWindow* window,
+                                NSView* contentView,
+                                const fs::path& outputPng) {
+    if (!window || !contentView) {
+        return false;
+    }
 
-static void pumpRunLoop(double seconds) {
-    NSDate* until = [NSDate dateWithTimeIntervalSinceNow:seconds];
-    while ([[NSDate date] compare:until] == NSOrderedAscending) {
-        @autoreleasepool {
-            NSEvent* event =
-                [NSApp nextEventMatchingMask:NSEventMaskAny
-                                   untilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]
-                                      inMode:NSDefaultRunLoopMode
-                                     dequeue:YES];
-            if (event) {
-                [NSApp sendEvent:event];
-            }
+    [NSApp activateIgnoringOtherApps:YES];
+    [window makeKeyAndOrderFront:nil];
+    [window displayIfNeeded];
+    pumpRunLoop(0.5);
+
+    using CaptureFn = CGImageRef (*)(CGRect, CGWindowListOption, CGWindowID, CGWindowImageOption);
+    static CaptureFn captureFn = reinterpret_cast<CaptureFn>(dlsym(RTLD_DEFAULT, "CGWindowListCreateImage"));
+
+    NSBitmapImageRep* rep = nil;
+    if (captureFn) {
+        CGWindowImageOption options = kCGWindowImageNominalResolution | kCGWindowImageBoundsIgnoreFraming;
+        CGImageRef image = captureFn(CGRectNull,
+                                     kCGWindowListOptionIncludingWindow,
+                                     (CGWindowID)[window windowNumber],
+                                     options);
+        if (image) {
+            rep = [[NSBitmapImageRep alloc] initWithCGImage:image];
+            CGImageRelease(image);
+        } else {
+            fprintf(stderr,
+                    "CGWindowListCreateImage returned NULL; ensure screen recording permission is granted.\n");
         }
     }
+
+    if (!rep) {
+        NSView* targetView = contentView;
+        [targetView displayIfNeeded];
+
+        NSRect bounds = [targetView bounds];
+        rep = [targetView bitmapImageRepForCachingDisplayInRect:bounds];
+        if (rep) {
+            [targetView cacheDisplayInRect:bounds toBitmapImageRep:rep];
+        } else {
+            NSInteger width  = (NSInteger)NSWidth(bounds);
+            NSInteger height = (NSInteger)NSHeight(bounds);
+            if (width <= 0 || height <= 0) {
+                fprintf(stderr,
+                        "Invalid view bounds for capture (%ldx%ld)\n",
+                        (long)width,
+                        (long)height);
+                return false;
+            }
+
+            rep = [[NSBitmapImageRep alloc]
+                initWithBitmapDataPlanes:NULL
+                              pixelsWide:width
+                              pixelsHigh:height
+                           bitsPerSample:8
+                         samplesPerPixel:4
+                                hasAlpha:YES
+                                isPlanar:NO
+                          colorSpaceName:NSCalibratedRGBColorSpace
+                             bytesPerRow:0
+                            bitsPerPixel:0];
+            if (!rep) {
+                fprintf(stderr, "Failed to allocate bitmap rep\n");
+                return false;
+            }
+
+            NSGraphicsContext* ctx = [NSGraphicsContext graphicsContextWithBitmapImageRep:rep];
+            [NSGraphicsContext saveGraphicsState];
+            [NSGraphicsContext setCurrentContext:ctx];
+            [targetView displayRectIgnoringOpacity:bounds inContext:ctx];
+            [NSGraphicsContext restoreGraphicsState];
+        }
+    }
+
+    NSData* pngData = [rep representationUsingType:NSBitmapImageFileTypePNG
+                                        properties:@{}];
+    if (![pngData writeToFile:[NSString stringWithUTF8String:outputPng.c_str()] atomically:YES]) {
+        fprintf(stderr, "Failed to write PNG\n");
+    }
+
+    return true;
 }
 
-bool ScreenshotHost::capturePlugin(const fs::path& pluginBundle,
-                                   const fs::path& outputPng,
-                                   const ScreenshotOptions& opts) {
+bool captureWithLegacyHost(const fs::path& pluginBundle,
+                           const fs::path& outputPng,
+                           const ScreenshotOptions& opts) {
     using namespace VST3::Hosting;
 
     std::string error;
@@ -140,8 +271,7 @@ bool ScreenshotHost::capturePlugin(const fs::path& pluginBundle,
     bool found = false;
     for (auto& info : module->getFactory().classInfos()) {
         if (strcmp(info.category().data(), kVstAudioEffectClass) == 0) {
-            if (!opts.classNameFilter.empty() &&
-                info.name() != opts.classNameFilter) {
+            if (!opts.classNameFilter.empty() && info.name() != opts.classNameFilter) {
                 continue;
             }
             chosenInfo = info;
@@ -207,83 +337,54 @@ bool ScreenshotHost::capturePlugin(const fs::path& pluginBundle,
         [window setContentSize:newFrame.size];
     }
 
-    [NSApp activateIgnoringOtherApps:YES];
-    [window makeKeyAndOrderFront:nil];
-    [window displayIfNeeded];
-    pumpRunLoop(0.5); // give complex UI frameworks time to draw
-
-    using CaptureFn = CGImageRef (*)(CGRect, CGWindowListOption, CGWindowID, CGWindowImageOption);
-    static CaptureFn captureFn = reinterpret_cast<CaptureFn>(dlsym(RTLD_DEFAULT, "CGWindowListCreateImage"));
-
-    NSBitmapImageRep* rep = nil;
-    if (captureFn) {
-        CGWindowImageOption options = kCGWindowImageNominalResolution | kCGWindowImageBoundsIgnoreFraming;
-        CGImageRef image = captureFn(CGRectNull,
-                                     kCGWindowListOptionIncludingWindow,
-                                     (CGWindowID)[window windowNumber],
-                                     options);
-        if (image) {
-            rep = [[NSBitmapImageRep alloc] initWithCGImage:image];
-            CGImageRelease(image);
-        } else {
-            fprintf(stderr, "CGWindowListCreateImage returned NULL; ensure screen recording permission is granted.\n");
-        }
-    }
-
-    if (!rep) {
-        NSView* targetView = contentView;
-        [targetView displayIfNeeded];
-
-        NSRect bounds = [targetView bounds];
-        rep = [targetView bitmapImageRepForCachingDisplayInRect:bounds];
-        if (rep) {
-            [targetView cacheDisplayInRect:bounds toBitmapImageRep:rep];
-        } else {
-            NSInteger width  = (NSInteger)NSWidth(bounds);
-            NSInteger height = (NSInteger)NSHeight(bounds);
-            if (width <= 0 || height <= 0) {
-                fprintf(stderr, "Invalid view bounds for capture (%ldx%ld)\n",
-                        (long)width,
-                        (long)height);
-                return false;
-            }
-
-            rep = [[NSBitmapImageRep alloc]
-                initWithBitmapDataPlanes:NULL
-                              pixelsWide:width
-                              pixelsHigh:height
-                           bitsPerSample:8
-                         samplesPerPixel:4
-                                hasAlpha:YES
-                                isPlanar:NO
-                          colorSpaceName:NSCalibratedRGBColorSpace
-                             bytesPerRow:0
-                            bitsPerPixel:0];
-            if (!rep) {
-                fprintf(stderr, "Failed to allocate bitmap rep\n");
-                return false;
-            }
-
-            NSGraphicsContext* ctx = [NSGraphicsContext graphicsContextWithBitmapImageRep:rep];
-            [NSGraphicsContext saveGraphicsState];
-            [NSGraphicsContext setCurrentContext:ctx];
-            [targetView displayRectIgnoringOpacity:bounds inContext:ctx];
-            [NSGraphicsContext restoreGraphicsState];
-        }
-    }
-
-    NSData* pngData = [rep representationUsingType:NSBitmapImageFileTypePNG
-                                        properties:@{}];
-    if (![pngData writeToFile:[NSString stringWithUTF8String:outputPng.c_str()] atomically:YES]) {
-        fprintf(stderr, "Failed to write PNG\n");
-    }
+    bool result = captureWindowToFile(window, contentView, outputPng);
 
     view->removed();
     view->setFrame(nullptr);
     controller->setComponentHandler(nullptr);
     [window orderOut:nil];
 
-    return true;
+    return result;
+}
+
+} // namespace
+
+bool ScreenshotHost::capturePlugin(const fs::path& pluginBundle,
+                                   const fs::path& outputPng,
+                                   const ScreenshotOptions& opts) {
+    std::optional<std::string> classUid;
+    if (!opts.classNameFilter.empty()) {
+        if (!resolveClassFilterToUid(pluginBundle, opts.classNameFilter, classUid)) {
+            return false;
+        }
+    }
+
+    EditorHostRunner runner;
+    std::string hostError;
+    if (runner.open(pluginBundle, classUid, hostError)) {
+        RunnerScopeGuard guard(runner);
+
+        // EditorHost automatically resizes window to match plugin size after attachment
+        // No need to manually resize
+
+        NSWindow* window = runner.window();
+        NSView* contentView = runner.contentView();
+        if (!window || !contentView) {
+            fprintf(stderr, "EditorHost did not provide a capture window\n");
+            return false;
+        }
+
+        bool captured = captureWindowToFile(window, contentView, outputPng);
+        [window orderOut:nil];
+        return captured;
+    }
+
+    fprintf(stderr,
+            "EditorHost failed to open %s: %s\nFalling back to legacy host...\n",
+            pluginBundle.c_str(),
+            hostError.c_str());
+
+    return captureWithLegacyHost(pluginBundle, outputPng, opts);
 }
 #else
 bool ScreenshotHost::capturePlugin(const fs::path& pluginBundle,
@@ -298,4 +399,4 @@ bool ScreenshotHost::capturePlugin(const fs::path& pluginBundle,
 }
 #endif
 
-} // namespace vstshot
+} // namespace vstface

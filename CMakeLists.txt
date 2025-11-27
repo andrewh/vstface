@@ -26,11 +26,15 @@ add_subdirectory(
     EXCLUDE_FROM_ALL
 )
 
+# We maintain our own copy of EditorHost with custom modifications
+# Original SDK editorhost build target is disabled
+
 if (NOT EXISTS "${VST3_SDK_DIR}/pluginterfaces")
     message(FATAL_ERROR "VST3 SDK not found in ${VST3_SDK_DIR}. See README.md.")
 endif()
 
 include_directories(
+    "${CMAKE_SOURCE_DIR}/src/editorhost/source"
     "${VST3_SDK_DIR}"
     "${VST3_SDK_DIR}/pluginterfaces"
     "${VST3_SDK_DIR}/public.sdk/source/vst"
@@ -46,6 +50,10 @@ add_executable(vstface
     src/main.cpp
     src/ScreenshotHost.mm
     src/ScreenshotHost.hpp
+    src/EditorHostRunner.mm
+    src/EditorHostRunner.hpp
+    src/editorhost/source/editorhost.cpp
+    src/editorhost/source/platform/mac/window.mm
     ${VST3_SDK_DIR}/public.sdk/source/vst/hosting/module_mac.mm
     ${VST3_SDK_DIR}/public.sdk/source/vst/hosting/plugprovider.cpp
     ${VST3_SDK_DIR}/public.sdk/source/vst/hosting/connectionproxy.cpp
@@ -66,6 +74,8 @@ target_link_libraries(vstface
 
 set_source_files_properties(
     src/ScreenshotHost.mm
+    src/EditorHostRunner.mm
+    src/editorhost/source/platform/mac/window.mm
     ${VST3_SDK_DIR}/public.sdk/source/vst/hosting/module_mac.mm
     PROPERTIES COMPILE_FLAGS "-fobjc-arc"
 )
