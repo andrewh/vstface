@@ -2,7 +2,7 @@
 #include <filesystem>
 #include <iostream>
 
-using namespace vstshot;
+using namespace vstface;
 namespace fs = std::filesystem;
 
 int main(int argc, char** argv) {
@@ -15,7 +15,6 @@ int main(int argc, char** argv) {
     fs::path out    = argv[2];
 
     ScreenshotOptions opts;
-    // TODO: parse CLI flags for width/height/class filter
 
     ScreenshotHost host;
     if (!host.capturePlugin(plugin, out, opts)) {

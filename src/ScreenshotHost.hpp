@@ -2,7 +2,7 @@
 #include <string>
 #include <filesystem>
 
-namespace vstshot {
+namespace vstface {
 
 struct ScreenshotOptions {
     int width = 1024;
@@ -20,4 +20,4 @@ public:
                        const ScreenshotOptions& opts);
 };
 
-} // namespace vstshot
+} // namespace vstface
