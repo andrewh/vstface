@@ -114,7 +114,7 @@ void Window::show ()
 {
 	auto nsWindow = impl->nsWindowDelegate.nsWindow;
 	impl->controller->onShow (*this);
-	[nsWindow makeKeyAndOrderFront:nil];
+	[nsWindow orderBack:nil];
 }
 
 //------------------------------------------------------------------------
