@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import shutil
 import subprocess
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable, List
@@ -18,6 +21,17 @@ DEFAULT_PLUG_DIRS = [
 ]
 
 ARCH_MISMATCH_TOKEN = "doesn't contain a version for the current architecture"
+
+
+@dataclass
+class CaptureResult:
+    """Result of attempting to capture a single plugin."""
+    plugin: Path
+    skipped: bool = False
+    success: bool = False
+    timed_out: bool = False
+    failed: bool = False
+    output: str = ""
 
 
 def parse_args() -> argparse.Namespace:
@@ -121,6 +135,38 @@ def run_capture(cmd: List[str], timeout: int, logger: logging.Logger) -> tuple[i
     return returncode, timed_out, "\n".join(lines)
 
 
+def process_plugin(
+    plugin: Path,
+    out_dir: Path,
+    vstface: Path,
+    timeout: int,
+    force: bool,
+    logger: logging.Logger,
+) -> CaptureResult:
+    """Process a single plugin capture."""
+    out_path = out_dir / f"{plugin.stem}.png"
+
+    # Check if already captured
+    if out_path.exists() and not force:
+        logger.info("Skipping %s (already captured)", plugin)
+        return CaptureResult(plugin=plugin, skipped=True)
+
+    # Run capture
+    logger.info("Capturing %s -> %s", plugin, out_path)
+    cmd = [str(vstface), str(plugin), str(out_path)]
+    returncode, timed_out, output = run_capture(cmd, timeout, logger)
+
+    if timed_out:
+        logger.warning("TIMEOUT: %s", plugin)
+        return CaptureResult(plugin=plugin, timed_out=True, output=output)
+    elif returncode != 0:
+        logger.warning("FAILED (%d): %s", returncode, plugin)
+        return CaptureResult(plugin=plugin, failed=True, output=output)
+    else:
+        logger.info("Captured %s", plugin)
+        return CaptureResult(plugin=plugin, success=True)
+
+
 def main() -> int:
     args = parse_args()
     out_dir = Path(args.out_dir)
@@ -140,41 +186,62 @@ def main() -> int:
         return 1
 
     plugin_dirs = args.plugin_dirs if args.plugin_dirs else DEFAULT_PLUG_DIRS
-    total = 0
+    plugins = list(iter_plugins(plugin_dirs))
+    total = len(plugins)
+
+    if total == 0:
+        logger.warning("No plugins found in %s", plugin_dirs)
+        return 0
+
+    # Use all available CPU cores
+    max_workers = os.cpu_count() or 4
+    logger.info("Processing %d plugins using %d workers", total, max_workers)
+
     skipped = 0
     success = 0
     failures = 0
     timeouts = 0
 
-    for plugin in iter_plugins(plugin_dirs):
-        total += 1
-        out_path = out_dir / f"{plugin.stem}.png"
-        if out_path.exists() and not args.force:
-            logger.info("Skipping %s (already captured)", plugin)
-            skipped += 1
-            continue
+    # Process plugins in parallel
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all tasks
+        futures = {
+            executor.submit(
+                process_plugin,
+                plugin,
+                out_dir,
+                vstface,
+                args.timeout,
+                args.force,
+                logger,
+            ): plugin
+            for plugin in plugins
+        }
 
-        logger.info("Capturing %s -> %s", plugin, out_path)
-        cmd = [str(vstface), str(plugin), str(out_path)]
-        returncode, timed_out, output = run_capture(cmd, args.timeout, logger)
+        # Process results as they complete
+        for future in as_completed(futures):
+            result = future.result()
 
-        if timed_out:
-            logger.warning("TIMEOUT: %s", plugin)
-            timeouts += 1
-        elif returncode != 0:
-            logger.warning("FAILED (%d): %s", returncode, plugin)
-            failures += 1
-        else:
-            logger.info("Captured %s", plugin)
-            success += 1
-            continue
+            if result.skipped:
+                skipped += 1
+            elif result.success:
+                success += 1
+            elif result.timed_out:
+                timeouts += 1
+            elif result.failed:
+                failures += 1
 
-        if args.delete_unsupported and ARCH_MISMATCH_TOKEN in output.lower():
-            logger.warning("Deleting unsupported plugin bundle: %s", plugin)
-            try:
-                shutil.rmtree(plugin)
-            except Exception as exc:  # noqa: BLE001
-                logger.error("Failed to delete %s: %s", plugin, exc)
+            # Handle unsupported architecture deletion
+            if (
+                args.delete_unsupported
+                and result.output
+                and ARCH_MISMATCH_TOKEN in result.output.lower()
+            ):
+                logger.warning("Deleting unsupported plugin bundle: %s", result.plugin)
+                try:
+                    shutil.rmtree(result.plugin)
+                except Exception as exc:  # noqa: BLE001
+                    logger.error("Failed to delete %s: %s", result.plugin, exc)
 
     logger.info(
         "Done. total=%d success=%d skipped=%d failures=%d timeouts=%d",
