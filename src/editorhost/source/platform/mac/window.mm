@@ -91,16 +91,28 @@ bool Window::init (const std::string& name, Size size, bool resizeable,
 		finalHeight = std::floor(finalHeight * scale);
 	}
 
-	auto contentRect = NSMakeRect (0., 0., finalWidth, finalHeight);
+	// Position window off-screen to keep it completely hidden
+	auto contentRect = NSMakeRect (-10000., -10000., finalWidth, finalHeight);
 	impl->nsWindowDelegate = [[VSTSDK_WindowDelegate alloc] initWithWindow:shared_from_this ()];
-	auto nsWindow = [[NSWindow alloc] initWithContentRect:contentRect
-	                                            styleMask:styleMask
-	                                              backing:NSBackingStoreBuffered
-	                                                defer:YES];
+
+	// Use NSPanel instead of NSWindow to avoid activation
+	auto nsWindow = [[NSPanel alloc] initWithContentRect:contentRect
+	                                           styleMask:NSWindowStyleMaskNonactivatingPanel
+	                                             backing:NSBackingStoreBuffered
+	                                               defer:YES];
 	[nsWindow setDelegate:impl->nsWindowDelegate];
 	nsWindow.releasedWhenClosed = NO;
 	impl->nsWindowDelegate.nsWindow = nsWindow;
-	[nsWindow center];
+
+	// Make window completely invisible and prevent all activation
+	[nsWindow setAlphaValue:0.0];
+	[nsWindow setLevel:NSNormalWindowLevel - 1];
+	[nsWindow setCollectionBehavior:NSWindowCollectionBehaviorCanJoinAllSpaces |
+	                                  NSWindowCollectionBehaviorStationary |
+	                                  NSWindowCollectionBehaviorIgnoresCycle];
+	[nsWindow setCanHide:NO];
+	[nsWindow setHidesOnDeactivate:NO];
+
 	return true;
 }
 
@@ -112,9 +124,9 @@ Window::~Window () noexcept
 //------------------------------------------------------------------------
 void Window::show ()
 {
-	auto nsWindow = impl->nsWindowDelegate.nsWindow;
+	// Window is already created and has a valid view for the plugin
+	// No need to order it since it's invisible and off-screen
 	impl->controller->onShow (*this);
-	[nsWindow orderBack:nil];
 }
 
 //------------------------------------------------------------------------

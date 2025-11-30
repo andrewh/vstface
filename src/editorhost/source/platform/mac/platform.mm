@@ -193,9 +193,16 @@ IPlatform& IPlatform::instance ()
 }
 
 //------------------------------------------------------------------------
+- (void)applicationWillFinishLaunching:(NSNotification*)notification
+{
+	// Prohibited mode completely prevents activation - for background agents
+	[[NSApplication sharedApplication] setActivationPolicy:NSApplicationActivationPolicyProhibited];
+}
+
+//------------------------------------------------------------------------
 - (void)applicationDidFinishLaunching:(NSNotification*)notification
 {
-	[self setupMenubar];
+	// Skip menubar setup for accessory applications
 	Steinberg::Vst::EditorHost::Platform::instance ().application->init (cmdArgs);
 	cmdArgs.clear ();
 }
