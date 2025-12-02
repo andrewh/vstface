@@ -91,6 +91,36 @@ pipeline, making it ideal for automated smoke checks.
 - Some commercial plug-ins install Intel-only binaries; these will fail to load
   on Apple Silicon and can optionally be deleted with the scan script.
 
+## Testing
+
+The project includes comprehensive automated tests using Google Test:
+
+- **Unit tests** validate ScreenshotHost helpers and VST3 interface
+  implementations
+- **Integration tests** drive the CLI against the test fixture plugin to verify
+  end-to-end functionality
+
+Run all tests (builds dependencies automatically):
+
+```bash
+make check
+```
+
+Or use the standard CTest target:
+
+```bash
+make test
+```
+
+Run tests individually:
+
+```bash
+./build/bin/Release/unit_tests
+./build/bin/Release/integration_tests
+```
+
+All test commands work from both the root directory and the build directory.
+
 ## Known Limitations
 
 - macOS only. There is no Windows or Linux support planned.
@@ -99,8 +129,6 @@ pipeline, making it ideal for automated smoke checks.
 - The binary does not sandbox plug-ins; they run with full user permissions.
 - Timeouts are best-effort and enforced by the Python script. A misbehaving
   plug-in might still leave background processes running.
-- There are no automated tests. Validate changes manually by capturing a few
-  known plug-ins and inspecting the resulting PNGs.
 
 ## License & Support
 

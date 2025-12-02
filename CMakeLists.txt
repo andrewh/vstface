@@ -113,3 +113,31 @@ set_source_files_properties(
     src/test_plugin/TestPluginView.mm
     PROPERTIES COMPILE_FLAGS "-fobjc-arc"
 )
+
+# Testing infrastructure
+include(FetchContent)
+FetchContent_Declare(
+    googletest
+    GIT_REPOSITORY https://github.com/google/googletest.git
+    GIT_TAG v1.15.2
+)
+# Prevent GoogleTest from overriding our compiler/linker options on Windows
+set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(googletest)
+
+enable_testing()
+add_subdirectory(tests)
+
+# Custom target to build all tests and their dependencies
+add_custom_target(build_tests
+    DEPENDS vstface vstface_test_fixture unit_tests integration_tests
+    COMMENT "Building all test executables and dependencies"
+)
+
+# Custom target to build and run tests
+add_custom_target(check
+    COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
+    DEPENDS build_tests
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    COMMENT "Building and running all tests"
+)
